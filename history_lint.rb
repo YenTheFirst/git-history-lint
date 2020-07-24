@@ -18,6 +18,8 @@ history.each do |commit|
   end
 end
 
+shas = history.map(&:sha)
+
 file_scores = per_file_stats.map do |path, commit_stats|
   score = 0
   churn = commit_stats.values.inject(&:+)
@@ -29,6 +31,14 @@ file_scores = per_file_stats.map do |path, commit_stats|
 
   # add 0, 1, or 2 to score depending on how many commits the file is in
   score += [1, Math.sqrt(history.count).ceil, Float::INFINITY].index {|v| commit_stats.count <= v}
+
+  # add 0, 1, or 2 depending on how the size of the largest gap in commit history for this file
+  # [only applies for files with > 1 commit in this history
+  my_commits = commit_stats.values_at(*shas)
+  commits_i = my_commits.each_with_index.select {|touched, i| !touched.nil?}.map(&:last)
+  largest_gap = commits_i.each_cons(2).map {|a,b| b-a}.max || 0
+  score += [2, Math.sqrt(history.count).ceil, Float::INFINITY].index {|v| largest_gap <= v}
+
   [path, score]
 end.to_h
 
@@ -68,7 +78,6 @@ commit_header = [
 
 file_header = ["path", "lines churned", "final lines touched", "times changed", "score"]
 
-shas = history.map(&:sha)
 file_rows = per_file_stats.map do |path, commit_stats|
   header = [
     path.strip,
