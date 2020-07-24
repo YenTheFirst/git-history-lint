@@ -6,30 +6,65 @@ g = Git.open(dir)
 overall_stats = g.diff(first, last).stats
 per_file_stats = {}
 per_commit_stats = []
+first_commit = {}
 history = g.log(nil).between(first, last).reverse_each
 history.each do |commit|
   commit.diff_parent.stats[:files].each do |path, stats|
     per_file_stats[path] ||= {}
+    first_commit[path] ||= commit.sha
     per_file_stats[path][commit.sha] = stats[:insertions] + stats[:deletions]
   end
 end
 
-commits = history.map do |e|
+file_scores = per_file_stats.map do |path, commit_stats|
+  score = 0
+  churn = commit_stats.values.inject(&:+)
+  overall_change = overall_stats[:files][path]&.values&.inject(&:+)
+  if churn.to_i > 0 && overall_change.to_i > 0
+    # add 0, 1, or 2 to score depending on how much 'hidden churn' this file has
+    score += [1.0, 1.2, Float::INFINITY].index {|v| churn/overall_change < v}
+  end
+
+  # add 0, 1, or 2 to score depending on how many commits the file is in
+  score += [1, Math.sqrt(history.count).ceil, Float::INFINITY].index {|v| commit_stats.count <= v}
+  [path, score]
+end.to_h
+
+commit_scores = history.map do |e|
+  # score starts as max score of file in commit
+  score = e.diff_parent.stats[:files].keys.map {|path| file_scores[path]}.compact.max || 0
+
+  # add 0, 1, or 2 depending on total lines touched
+  score += [30, 100, Float::INFINITY].index {|v| e.diff_parent.lines <= v}
+
+  # add 0, 1, or 2 depending on files touched
+  total_files_touched = e.diff_parent.size
+  score += [5, 30, Float::INFINITY].index {|v| total_files_touched <= v}
+
+  # add 0, 1, or 2 depending on how many 'new' vs 'already edited' files we're touching.
+  new_files_touched = first_commit.values_at(*e.diff_parent.stats[:files].keys).count(e.sha)
+  score += [0.8, 0.4, 0.0].index {|v| new_files_touched / total_files_touched >= v}
+
+  score
+end
+
+commits = history.zip(commit_scores).map do |e, score|
   [
     e.sha[0,6],
     e.message.each_line.first.strip,
     e.diff_parent.lines,
-    e.diff_parent.size
+    e.diff_parent.size,
+    score
   ]
 end
 
 commit_header = [
-  *[[nil]*4]*4,
-  ["sha", "message", "lines touched", "files touched"],
+  *[[nil]*5]*5,
+  ["sha", "message", "lines touched", "files touched", "score"],
   *commits
 ].transpose
 
-file_header = ["path", "lines churned", "final lines touched", "times changed"]
+file_header = ["path", "lines churned", "final lines touched", "times changed", "score"]
 
 shas = history.map(&:sha)
 file_rows = per_file_stats.map do |path, commit_stats|
@@ -38,6 +73,7 @@ file_rows = per_file_stats.map do |path, commit_stats|
     commit_stats.values.inject(&:+), # churn
     overall_stats[:files][path]&.values&.inject(&:+), # overall lines changed
     commit_stats.count,
+    file_scores[path],
     nil
   ]
   values = commit_stats.values_at(*shas)
