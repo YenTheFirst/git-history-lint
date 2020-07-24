@@ -1,3 +1,5 @@
+#!/usr/bin/env ruby
+
 require 'git'
 dir, first, last = *ARGV[0,3]
 
